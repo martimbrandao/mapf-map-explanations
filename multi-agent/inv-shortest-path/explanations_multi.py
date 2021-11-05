@@ -7,6 +7,7 @@ import subprocess
 from path import *
 from additional import visualize
 import copy
+import pdb
 # from additional import shortest_path as sp
 
 
@@ -289,10 +290,34 @@ def create_new_problem(old_problem, new_paths, agent_names, new_obstacles):
 
 
 def sanity_check(new_cbs_solution, agent_names, desired_paths):
+    # this checks whether selected agents have cost of the same length as what was desired
     for i, agent_name in enumerate(agent_names):
         if len(new_cbs_solution['schedule'][agent_name]) != len(desired_paths[i]):
             print("Multi-Agent ISP Fail!")
             return False
+    print("Multi-Agent ISP Success!")
+    return True
+
+
+def sanity_check2(old_cbs_solution, new_cbs_solution, agent_names, desired_paths):
+    # cost of optimal solution with old map
+    old_cost = 0
+    for agent in old_cbs_solution['schedule']:
+        old_cost += len(old_cbs_solution['schedule'][agent]) - 1
+    # cost of optimal solution with new map
+    new_cost = 0
+    for agent in new_cbs_solution['schedule']:
+        new_cost += len(new_cbs_solution['schedule'][agent]) - 1
+    # we expect cost to be equal to that of a solution where selected agents have their desired paths & other agents have old paths
+    new_expected_cost = 0
+    for i, agent_name in enumerate(agent_names):
+        new_expected_cost += len(desired_paths[i]) - 1
+    for agent in old_cbs_solution['schedule']:
+        if agent not in agent_names:
+            new_expected_cost += len(old_cbs_solution['schedule'][agent]) - 1
+    if new_expected_cost != new_cost:
+        print("Multi-Agent ISP Fail!")
+        return False
     print("Multi-Agent ISP Success!")
     return True
 
@@ -338,7 +363,7 @@ def main_inv_mapf(problem_file, verbose=False, animate=False):
     # Sanity Check
     generate_cbs_solution(ROOT_PATH + "/" + new_filename)
     new_cbs_solution = parse_yaml(SOLUTION_YAML)
-    success = sanity_check(new_cbs_solution, agent_names, desired_paths)
+    success = sanity_check2(raw_solution, new_cbs_solution, agent_names, desired_paths)
 
     # Animation
     if animate:

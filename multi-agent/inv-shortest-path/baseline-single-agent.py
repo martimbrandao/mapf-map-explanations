@@ -2,7 +2,11 @@ import yaml
 import networkx as nx
 import cvxpy as cp
 import numpy as np
-
+import argparse
+import copy
+import pdb
+from path import *
+import explanations_multi
 
 # Parse YAML to create graph
 def parse_yaml(filepath):
@@ -190,10 +194,19 @@ def isp_discrete(graph, desired_path, area_costs=None, allowed_area_types=None, 
         for adj in new_graph[vn]:
             new_graph[adj][vn]['weight'] = area_costs[area_type] * dist_per_edge
 
+    # New obstacles set
+    new_obstacles = []
+    for i in range(len(l_original)):
+        if l_original[i] != l_new[i]:
+            pdb.set_trace()
+            vn_idx = i // len(allowed_area_types)
+            vn = varnodes[vn_idx]
+            new_obstacles.append(vn)
+
     # Sanity Check
     success = check(dp, new_graph)
     # Return
-    return new_graph, success
+    return new_graph, success, new_obstacles
 
 
 # ISP Continuous
@@ -255,3 +268,67 @@ def isp_continuous(graph, desired_path, area_costs=None, allowed_area_types=None
     success = check(dp, new_graph)
     # Return
     return new_graph, success
+
+if __name__ == '__main__':
+
+    # Terminal Parser
+    parser = argparse.ArgumentParser()
+    parser.add_argument("problem_file", help="input problem filepath")
+    parser.add_argument("-v", "--verbose", action="store_true", help="outputs debug information")
+    parser.add_argument("-a", "--animate", action="store_true", help="shows animation")
+    args = parser.parse_args()
+
+    # Parsing and generating CBS solution of original MULTI-AGENT problem
+    problem_fullpath = EXAMPLES_PATH + "/" + args.problem_file
+    explanations_multi.generate_cbs_solution(problem_fullpath)
+    raw_problem = explanations_multi.parse_yaml(problem_fullpath)
+    raw_solution = explanations_multi.parse_yaml(SOLUTION_YAML)
+
+    # Handling desired path of the agent and get agent name
+    desired_paths = []
+    agent_names = []
+    for agent in raw_problem['agents']:
+        if agent.get('waypoints') is not None:
+            desired_paths.append(agent['waypoints'])
+            agent_names.append(agent['name'])
+    if len(desired_paths) > 1:
+      print('For now, only supporting this baseline if there is a desired path for a single agent only')
+      exit()
+
+    # Get paths (schedule) of all agents except those that have a desired path
+    ori_makespan = copy.deepcopy(raw_solution['statistics']['makespan'])
+    schedule = copy.deepcopy(raw_solution['schedule'])
+    for agent_name in agent_names:
+        schedule.pop(agent_name)
+
+    # Get set of all the nodes that are ever passed by any agent (other than ours) at any time
+    nodes_passed = set()
+    for path in schedule.values():
+        for t, pos in enumerate(path):
+            n = (pos['x'], pos['y'])
+            nodes_passed.add(n)
+
+    # Get graph for single-agent ISP
+    graph, old_dct = parse_yaml(problem_fullpath)
+
+    # Run single-agent ISP with the extra constraint that we cannot add obstacles to places that other agents currently pass
+    desired_path = [(x[0], x[1]) for x in desired_paths[0]]
+    new_graph, success_isp, new_obstacles = isp_discrete(graph, desired_path)
+    if len(new_obstacles) == 0:
+      print('No obstacles added/removed! Means single-agent approach cannot solve this multi-agent ISP problem')
+
+    # Create new schedule and problem dict and created a new problem yaml file
+    new_schedule = explanations_multi.create_new_schedule(raw_solution, desired_paths, agent_names)
+    new_problem = explanations_multi.create_new_problem(raw_problem, desired_paths, agent_names, new_obstacles)
+    new_filename = "additional/build/new_problem.yaml"
+    explanations_multi.create_problem_yaml(new_problem, new_filename)
+
+    # Sanity Check
+    explanations_multi.generate_cbs_solution(ROOT_PATH + "/" + new_filename)
+    new_cbs_solution = explanations_multi.parse_yaml(SOLUTION_YAML)
+    success = explanations_multi.sanity_check2(raw_solution, new_cbs_solution, agent_names, desired_paths)
+
+    # Animation
+    if args.animate:
+        explanations_multi.generate_animation(raw_problem, new_problem, new_schedule)
+
