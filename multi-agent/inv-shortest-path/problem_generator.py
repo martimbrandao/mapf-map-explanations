@@ -67,7 +67,7 @@ def generate_problem(f, raw_problem, raw_solution):
         print('Could not find a good agent... giving up.')
         return False
 
-    # unpickable points are obstacles, start/goal of all agents, current path of our agent
+    # unpickable waypoints are obstacles, start/goal of all agents, current path of our agent
     unpickable = []
     for obs in raw_problem['map']['obstacles']:
         unpickable.append( tuple(obs) )
@@ -111,6 +111,24 @@ def generate_problem(f, raw_problem, raw_solution):
     if desired_path == None:
         return False
 
+    # Check for collisions
+    for a in raw_solution['schedule']:
+        if a != agent['name']:
+            path = raw_solution['schedule'][a]
+            for t, pos in enumerate(path):
+                n = (pos['x'], pos['y'])
+                if n == tuple(desired_path[min(t, len(desired_path) - 1)]):
+                    print('Collision between desired path and other agents')
+                    return False
+    for t in range(raw_solution['statistics']['makespan'], len(desired_path)):
+        for a in raw_solution['schedule']:
+            if a != agent['name']:
+                path = raw_solution['schedule'][a]
+                last_node = (path[-1]['x'], path[-1]['y'])
+                if tuple(desired_path[t]) == last_node:
+                    print('Collision between desired path and other agents')
+                    return False
+
     print('Desired path for %s has new length %d (it was %d before)' % (agent['name'], len(desired_path), len(raw_solution['schedule'][agent['name']])))
 
     # save this as an InvMAPF problem...
@@ -121,17 +139,20 @@ def generate_problem(f, raw_problem, raw_solution):
     # try to solve it
     if METHOD == 'multi':
         try:
-            _, success = explanations_multi.main_inv_mapf('../'+new_filename, False, ANIMATE)
+            success, new_obstacles = explanations_multi.main_inv_mapf('../'+new_filename, False, ANIMATE)
         except KeyError:
             success = False
     elif METHOD == 'single':
         try:
-            success, _ = baseline_single_agent.main_inv_mapf('../'+new_filename, False, ANIMATE)
+            success, new_obstacles = baseline_single_agent.main_inv_mapf('../'+new_filename, False, ANIMATE)
         except KeyError:
             success = False
     else:
         print('No such method')
         exit()
+
+    if len(new_obstacles) == len(raw_problem['map']['obstacles']):
+        success = False
 
     # save the problem if it is solvable
     if success:
@@ -140,6 +161,8 @@ def generate_problem(f, raw_problem, raw_solution):
         new_filename_save = 'rnd_' + METHOD + '_inv_problem_' + os.path.basename(f)
         explanations_multi.create_problem_yaml(new_problem, new_filename_save)
         return True
+    else:
+        return False
 
 
 # Main

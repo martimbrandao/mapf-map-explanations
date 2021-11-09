@@ -171,9 +171,12 @@ def isp_discrete(graph, desired_path, area_costs=None, allowed_area_types=None, 
         idx = len(allowed_area_types) * i
         constraints.append(cp.sum(l_[idx:idx + len(allowed_area_types)]) == 1)
     # lambda >= 0, for all j not in desired path.
+    # NOTE THIS IS DIFFERENT FROM ORIGINAL CONSTRAINTS (ORIGINAL: >= 0)
+    # Otherwise new obstacles are not created
+    # probably justified because this is a 'sensitivity' parameter
     for j in range(len(edges)):
         if xzero[j] == 0:
-            constraints.append(lambda_[j] >= 0)
+            constraints.append(lambda_[j] >= 0.1)
     # some locations are forced to be free (cant add obstacles)
     for i in range(len(varnodes)):
         if varnodes[i] in forced_free_locations:
@@ -278,10 +281,15 @@ def isp_continuous(graph, desired_path, area_costs=None, allowed_area_types=None
     # Return
     return new_graph, success
 
+
 def main_inv_mapf(problem_file, verbose=False, animate=False):
+    problem_fullpath = EXAMPLES_PATH + "/" + problem_file
+    return main_inv_mapf_fullpath(problem_fullpath, verbose, animate)
+
+
+def main_inv_mapf_fullpath(problem_fullpath, verbose=False, animate=False):
 
     # Parsing and generating CBS solution of original MULTI-AGENT problem
-    problem_fullpath = EXAMPLES_PATH + "/" + problem_file
     solved = explanations_multi.generate_cbs_solution(problem_fullpath)
     if not solved:
         return False, []
