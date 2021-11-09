@@ -125,7 +125,7 @@ def check(dp, new_graph):
 
 
 # ISP Discrete
-def isp_discrete(graph, desired_path, area_costs=None, allowed_area_types=None, dist_per_edge=0.5):
+def isp_discrete(graph, desired_path, area_costs=None, allowed_area_types=None, dist_per_edge=0.5, forced_free_locations=[]):
     if allowed_area_types is None:
         allowed_area_types = [0, 1]
     if area_costs is None:
@@ -166,20 +166,25 @@ def isp_discrete(graph, desired_path, area_costs=None, allowed_area_types=None, 
         else:
             # sum_i a_ij * pi_i + lambda_j = d_j,   for all j not in desired path
             constraints.append(cp.sum(cp.multiply(A[:, j], pi_)) + lambda_[j] == d_j)
-        # sum_k l_ik = 1, for all i
+    # sum_k l_ik = 1, for all i
     for i in range(len(varnodes)):
         idx = len(allowed_area_types) * i
         constraints.append(cp.sum(l_[idx:idx + len(allowed_area_types)]) == 1)
-        # lambda >= 0, for all j not in desired path.
+    # lambda >= 0, for all j not in desired path.
     for j in range(len(edges)):
         if xzero[j] == 0:
             constraints.append(lambda_[j] >= 0)
+    # some locations are forced to be free (cant add obstacles)
+    for i in range(len(varnodes)):
+        if varnodes[i] in forced_free_locations:
+            idx = len(allowed_area_types) * i
+            constraints.append(l_[idx+0] == 1)
     # solve with cvxpy
     prob = cp.Problem(cp.Minimize(cost), constraints)
     value = prob.solve(solver=cp.GUROBI)
     if value == float('inf'):
         print("inverse shortest path FAILED")
-        return []
+        return [], False, []
 
     # new graph - weights added to edges
     new_graph = graph.copy()
@@ -196,12 +201,16 @@ def isp_discrete(graph, desired_path, area_costs=None, allowed_area_types=None, 
 
     # New obstacles set
     new_obstacles = []
-    for i in range(len(l_original)):
-        if l_original[i] != l_new[i]:
-            pdb.set_trace()
-            vn_idx = i // len(allowed_area_types)
-            vn = varnodes[vn_idx]
-            new_obstacles.append(vn)
+    #for i in range(len(l_original)):
+    #    if l_original[i] != l_new[i]:
+    #        vn_idx = i // len(allowed_area_types)
+    #        vn = varnodes[vn_idx]
+    #        new_obstacles.append(list(vn))
+    for i in range(len(varnodes)):
+        idx = len(allowed_area_types) * i
+        if round(l_new[idx+1]) == 1:
+            vn = varnodes[i]
+            new_obstacles.append(list(vn))
 
     # Sanity Check
     success = check(dp, new_graph)
@@ -269,18 +278,13 @@ def isp_continuous(graph, desired_path, area_costs=None, allowed_area_types=None
     # Return
     return new_graph, success
 
-if __name__ == '__main__':
-
-    # Terminal Parser
-    parser = argparse.ArgumentParser()
-    parser.add_argument("problem_file", help="input problem filepath")
-    parser.add_argument("-v", "--verbose", action="store_true", help="outputs debug information")
-    parser.add_argument("-a", "--animate", action="store_true", help="shows animation")
-    args = parser.parse_args()
+def main_inv_mapf(problem_file, verbose=False, animate=False):
 
     # Parsing and generating CBS solution of original MULTI-AGENT problem
-    problem_fullpath = EXAMPLES_PATH + "/" + args.problem_file
-    explanations_multi.generate_cbs_solution(problem_fullpath)
+    problem_fullpath = EXAMPLES_PATH + "/" + problem_file
+    solved = explanations_multi.generate_cbs_solution(problem_fullpath)
+    if not solved:
+        return False, []
     raw_problem = explanations_multi.parse_yaml(problem_fullpath)
     raw_solution = explanations_multi.parse_yaml(SOLUTION_YAML)
 
@@ -302,20 +306,23 @@ if __name__ == '__main__':
         schedule.pop(agent_name)
 
     # Get set of all the nodes that are ever passed by any agent (other than ours) at any time
-    nodes_passed = set()
+    nodes_passed = []
     for path in schedule.values():
         for t, pos in enumerate(path):
             n = (pos['x'], pos['y'])
-            nodes_passed.add(n)
+            nodes_passed.append(n)
 
     # Get graph for single-agent ISP
     graph, old_dct = parse_yaml(problem_fullpath)
 
     # Run single-agent ISP with the extra constraint that we cannot add obstacles to places that other agents currently pass
     desired_path = [(x[0], x[1]) for x in desired_paths[0]]
-    new_graph, success_isp, new_obstacles = isp_discrete(graph, desired_path)
+    new_graph, success_isp, new_obstacles = isp_discrete(graph, desired_path, forced_free_locations=nodes_passed)
+    if not success_isp:
+      return False, []
     if len(new_obstacles) == 0:
       print('No obstacles added/removed! Means single-agent approach cannot solve this multi-agent ISP problem')
+      return False, []
 
     # Create new schedule and problem dict and created a new problem yaml file
     new_schedule = explanations_multi.create_new_schedule(raw_solution, desired_paths, agent_names)
@@ -324,11 +331,24 @@ if __name__ == '__main__':
     explanations_multi.create_problem_yaml(new_problem, new_filename)
 
     # Sanity Check
-    explanations_multi.generate_cbs_solution(ROOT_PATH + "/" + new_filename)
+    solved = explanations_multi.generate_cbs_solution(ROOT_PATH + "/" + new_filename)
+    if not solved:
+        return False, []
     new_cbs_solution = explanations_multi.parse_yaml(SOLUTION_YAML)
     success = explanations_multi.sanity_check2(raw_solution, new_cbs_solution, agent_names, desired_paths)
 
     # Animation
-    if args.animate:
+    if animate and success and len(new_obstacles) > 0:
         explanations_multi.generate_animation(raw_problem, new_problem, new_schedule)
 
+    return success, new_obstacles
+
+if __name__ == '__main__':
+
+    # Terminal Parser
+    parser = argparse.ArgumentParser()
+    parser.add_argument("problem_file", help="input problem filepath")
+    parser.add_argument("-v", "--verbose", action="store_true", help="outputs debug information")
+    parser.add_argument("-a", "--animate", action="store_true", help="shows animation")
+    args = parser.parse_args()
+    main_inv_map(args.problem_file, args.verbose, args.animate)

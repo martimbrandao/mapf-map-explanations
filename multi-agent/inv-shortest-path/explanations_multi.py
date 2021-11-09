@@ -4,12 +4,17 @@ import cvxpy as cp
 import numpy as np
 import argparse
 import subprocess
+import resource
 from path import *
 from additional import visualize
 import copy
 import pdb
+#from memory_profiler import profile
+import gc
 # from additional import shortest_path as sp
 
+MAX_TIME = 600  # Maximum search time (in seconds)...
+MAX_VIRTUAL_MEMORY = 8 * 1024 * 1024 * 1024 # Maximal virtual memory for subprocesses (in bytes)...
 
 def create_problem_yaml(problem_dct, filename):
     with open(filename, 'w') as stream:
@@ -70,7 +75,7 @@ def create_graph(raw_dict):
 #         return [], success
 #     return desired_path, success
 
-
+#@profile
 def inv_mapf(graph, raw_solution, desired_paths, agent_names, verbose=False):
     # Extract Solution Data with specified agent stored separately.
     ori_makespan = copy.deepcopy(raw_solution['statistics']['makespan'])
@@ -251,7 +256,7 @@ def inv_mapf(graph, raw_solution, desired_paths, agent_names, verbose=False):
         constraints.append(l_[node2lidx[n]] == 0)
     # solve with cvxpy
     prob = cp.Problem(cp.Minimize(cost), constraints)
-    value = prob.solve(solver=cp.GUROBI)
+    value = prob.solve(solver=cp.GUROBI) #, Threads=4, TimeLimit=30)
     if value == float('inf'):
         print("inverse shortest path FAILED")
         return []
@@ -316,17 +321,36 @@ def sanity_check2(old_cbs_solution, new_cbs_solution, agent_names, desired_paths
         if agent not in agent_names:
             new_expected_cost += len(old_cbs_solution['schedule'][agent]) - 1
     if new_expected_cost != new_cost:
-        print("Multi-Agent ISP Fail!")
+        print("Multi-Agent ISP Fail (i.e. cost not as expected)")
+        print("old = %d, expected = %d, cost = %d" % (old_cost, new_expected_cost, new_cost))
         return False
-    print("Multi-Agent ISP Success!")
+    print("Multi-Agent ISP Success (i.e. solution passed sanity check)")
     return True
+
+
+def limit_mem_and_cpu():
+    # The tuple below is of the form (soft limit, hard limit). Limit only
+    # the soft part so that the limit can be increased later (setting also
+    # the hard limit would prevent that).
+    # When the limit cannot be changed, setrlimit() raises ValueError.
+    resource.setrlimit(resource.RLIMIT_AS, (MAX_VIRTUAL_MEMORY, resource.RLIM_INFINITY))
+    _, hard = resource.getrlimit(resource.RLIMIT_CPU)
+    resource.setrlimit(resource.RLIMIT_CPU, (MAX_TIME, hard))
 
 
 def generate_cbs_solution(filepath):
     os.chdir(CBS_DIR_PATH)
     #subprocess.run('./cbs -i ' + filepath + ' -o output.yaml', shell=True, capture_output=True)
-    subprocess.run('./cbs -i ' + filepath + ' -o output.yaml', shell=True)
+    #subprocess.run('./cbs -i ' + filepath + ' -o output.yaml', shell=True)
+    if os.path.exists('output.yaml'):
+        os.remove('output.yaml')
+    cmd = './cbs -i ' + filepath + ' -o output.yaml'
+    out1, err1 = subprocess.Popen(cmd.split(), preexec_fn=limit_mem_and_cpu, stdout=subprocess.PIPE, stderr=subprocess.PIPE).communicate()
+    success = os.path.exists('output.yaml')
+    #print(out1)
+    #print(err1)
     os.chdir(ROOT_PATH)
+    return success
 
 
 def generate_animation(old_problem, new_problem, new_schedule):
@@ -337,7 +361,9 @@ def generate_animation(old_problem, new_problem, new_schedule):
 def main_inv_mapf(problem_file, verbose=False, animate=False):
     # Parsing and generating CBS solution of original problem file
     problem_fullpath = EXAMPLES_PATH + "/" + problem_file
-    generate_cbs_solution(problem_fullpath)
+    solved = generate_cbs_solution(problem_fullpath)
+    if not solved:
+        return [], False
     raw_problem = parse_yaml(problem_fullpath)
     raw_solution = parse_yaml(SOLUTION_YAML)
     graph = create_graph(raw_problem)
@@ -352,7 +378,11 @@ def main_inv_mapf(problem_file, verbose=False, animate=False):
 
     # Multi-Agent ISP
     print("Running Multi-Agent ISP Algorithm...")
+    gc.collect()
     new_obstacles = inv_mapf(graph, raw_solution, desired_paths, agent_names, verbose)
+    if new_obstacles == []:
+        return raw_problem, False
+    print("...solved.")
 
     # Create new schedule and problem dict and created a new problem yaml file
     new_schedule = create_new_schedule(raw_solution, desired_paths, agent_names)
@@ -361,12 +391,15 @@ def main_inv_mapf(problem_file, verbose=False, animate=False):
     create_problem_yaml(new_problem, new_filename)
 
     # Sanity Check
-    generate_cbs_solution(ROOT_PATH + "/" + new_filename)
+    print("Sanity check: running CBS on new problem...")
+    solved = generate_cbs_solution(ROOT_PATH + "/" + new_filename)
+    if not solved:
+        return raw_problem, False
     new_cbs_solution = parse_yaml(SOLUTION_YAML)
     success = sanity_check2(raw_solution, new_cbs_solution, agent_names, desired_paths)
 
     # Animation
-    if animate:
+    if animate and success:
         generate_animation(raw_problem, new_problem, new_schedule)
 
     # Return
