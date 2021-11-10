@@ -288,6 +288,14 @@ def main_inv_mapf_fullpath(problem_fullpath, verbose=False, animate=False):
         return False, []
     if animate:
         explanations_multi.generate_animation(raw_problem, new_problem, new_solution)
+        # debug animation
+        #desired_solution = copy.deepcopy(raw_solution)
+        #for i in range(len(desired_paths)):
+        #    agent = agent_names[i]
+        #    desired_solution['schedule'][agent] = []
+        #    for t, pos in enumerate(desired_paths[i]):
+        #        desired_solution['schedule'][agent].append( {'x':pos[0], 'y':pos[1], 't':t} )
+        #explanations_multi.generate_animation(raw_problem, new_problem, desired_solution)
 
     return True, new_obstacles
 

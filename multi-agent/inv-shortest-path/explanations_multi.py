@@ -146,6 +146,11 @@ def inv_mapf(graph, raw_solution, desired_paths, agent_names, verbose=False):
                 for i in range(t + 1, ori_makespan + 1):
                     occupied_nodes[i][temp] = temp
 
+    # desired path goals
+    desired_goals = []
+    for desired_path in desired_paths:
+        desired_goals.append( (desired_path[-1][0], desired_path[-1][1]) )
+
     # Auxiliary variables
     edges = []
     edge_t_2idx = {}  # key: tuple[edge, t] where t=0 means edge going from time=0 to time=1
@@ -249,11 +254,11 @@ def inv_mapf(graph, raw_solution, desired_paths, agent_names, verbose=False):
     for j, edge in enumerate(edges):
         i = edge2lidx[edge]
         edge_w = l_[i] * 1000 + 1
-        if edge[0] == edge[1]:
-            # we set slightly lower costs to wait in the same cell.
-            # this is necessary to make sure it is better to reach a goal at t=max_t using a path that reaches the goal earlier than that
-            # this is therefore also necessary to create obstacles that prevent originally shorter paths to goal from being optimal
-            # yonathan was using "lambda >= 1" instead of this... but that is not what is in the theory and it was not working in some problems
+        if edge[0] == edge[1] and edge[1] in desired_goals:
+            # we set slightly lower costs to wait at goal cells.
+            # this is necessary to make sure it is better to reach a goal at t=max_t using a path that reaches the goal earlier.
+            # this is therefore also necessary to create obstacles that prevent originally shorter paths to goal from being optimal.
+            # yonathan was using "lambda >= 1" instead of this... but that is not what is in the theory and it was not working in some problems.
             edge_w -= 0.1
         for i in range(len(desired_paths)):
             if xzeros[i, j] == 1:
@@ -514,8 +519,10 @@ def main_inv_mapf_fullpath(problem_fullpath, verbose=False, animate=False):
     success = sanity_check2(raw_solution, new_cbs_solution, agent_names, desired_paths, new_obstacles)
 
     # Animation
-    if animate and success:
-        generate_animation(raw_problem, new_problem, new_schedule)
+    if animate:
+        #generate_animation(raw_problem, new_problem, raw_solution)
+        #generate_animation(raw_problem, new_problem, new_schedule)
+        generate_animation(raw_problem, new_problem, new_cbs_solution)
 
     # Return
     return success, new_obstacles
