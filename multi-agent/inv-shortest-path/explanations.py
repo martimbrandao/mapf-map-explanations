@@ -246,7 +246,9 @@ def sanity_check(new_cbs_solution, agent_name, desired_path):
 
 def generate_cbs_solution(filepath):
     os.chdir(CBS_DIR_PATH)
-    subprocess.run('./cbs -i ' + filepath + ' -o output.yaml', shell=True, capture_output=True)
+    #subprocess.run('./cbs -i ' + filepath + ' -o output.yaml', shell=True, capture_output=True)
+    cmd = './cbs -i ' + filepath + ' -o output.yaml'
+    out1, err1 = subprocess.Popen(cmd.split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE).communicate()
     os.chdir(ROOT_PATH)
 
 

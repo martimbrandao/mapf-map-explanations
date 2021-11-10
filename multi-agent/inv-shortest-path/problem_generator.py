@@ -6,12 +6,13 @@ import networkx as nx
 import copy
 import pdb
 import explanations_multi
+import explanations_multi_incremental
 import baseline_single_agent
 from path import *
 #from memory_profiler import profile
 
 ANIMATE = False
-METHOD = 'single' # 'single', 'multi'
+METHOD = 'incr' # 'single', 'multi', 'incr'
 
 def get_simple_graph(filepath, path_unpickable):
     # Parse YAML
@@ -110,6 +111,8 @@ def generate_problem(f, raw_problem, raw_solution):
 
     if desired_path == None:
         return False
+    if len(desired_path) == len(raw_solution['schedule'][agent['name']]):
+        return False
 
     # Check for collisions
     for a in raw_solution['schedule']:
@@ -142,6 +145,11 @@ def generate_problem(f, raw_problem, raw_solution):
             success, new_obstacles = explanations_multi.main_inv_mapf('../'+new_filename, False, ANIMATE)
         except KeyError:
             success = False
+    elif METHOD == 'incr':
+        try:
+            success, new_obstacles = explanations_multi_incremental.main_inv_mapf('../'+new_filename, False, ANIMATE)
+        except KeyError:
+            success = False
     elif METHOD == 'single':
         try:
             success, new_obstacles = baseline_single_agent.main_inv_mapf('../'+new_filename, False, ANIMATE)
@@ -168,9 +176,22 @@ def generate_problem(f, raw_problem, raw_solution):
 # Main
 if __name__ == '__main__':
 
-    for f in sorted(glob.glob(ROOT_PATH + '/../../examples/agents5/*.yaml')):
+    files = sorted(glob.glob(ROOT_PATH + '/../../examples/agents5/*.yaml'))
 
+    # see what we have generated so far
+    start_idx = 0
+    for i in range(len(files)):
+        f = files[i]
+        new_filename_save = 'rnd_' + METHOD + '_inv_problem_' + os.path.basename(f)
+        if os.path.exists(new_filename_save):
+            start_idx = i+1
+
+    # generate one inv-mapf problem for each raw problem
+    for i in range(start_idx, len(files)):
+
+        f = files[i]
         print(f)
+
         explanations_multi.generate_cbs_solution(f)
         raw_problem = explanations_multi.parse_yaml(f)
         raw_solution = explanations_multi.parse_yaml(SOLUTION_YAML)

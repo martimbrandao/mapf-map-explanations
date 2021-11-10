@@ -176,7 +176,7 @@ def isp_discrete(graph, desired_path, area_costs=None, allowed_area_types=None, 
     # probably justified because this is a 'sensitivity' parameter
     for j in range(len(edges)):
         if xzero[j] == 0:
-            constraints.append(lambda_[j] >= 0.1)
+            constraints.append(lambda_[j] >= 0)
     # some locations are forced to be free (cant add obstacles)
     for i in range(len(varnodes)):
         if varnodes[i] in forced_free_locations:
@@ -343,7 +343,7 @@ def main_inv_mapf_fullpath(problem_fullpath, verbose=False, animate=False):
     if not solved:
         return False, []
     new_cbs_solution = explanations_multi.parse_yaml(SOLUTION_YAML)
-    success = explanations_multi.sanity_check2(raw_solution, new_cbs_solution, agent_names, desired_paths)
+    success = explanations_multi.sanity_check2(raw_solution, new_cbs_solution, agent_names, desired_paths, new_obstacles)
 
     # Animation
     if animate and success and len(new_obstacles) > 0:
