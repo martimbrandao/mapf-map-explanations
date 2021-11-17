@@ -9,17 +9,27 @@ from path import *
 from additional import visualize
 import explanations_multi
 import copy
+import time
 import pdb
 
-def inv_mapf_incremental(raw_problem, raw_solution, new_obstacles, bad_mapf_solutions, desired_paths, agent_names, strictly_lower_cost=False, verbose=False):
+
+def inv_mapf_incremental(raw_problem, raw_solution, new_obstacles, bad_mapf_solutions, input_desired_paths, agent_names, strictly_lower_cost=False, input_desired_mapf_solution=None, find_all_solutions=False, verbose=False):
 
     # desired solution
-    desired_mapf_solution = copy.deepcopy(raw_solution)
-    for i in range(len(desired_paths)):
-        agent = agent_names[i]
-        desired_mapf_solution['schedule'][agent] = []
-        for t, pos in enumerate(desired_paths[i]):
-            desired_mapf_solution['schedule'][agent].append( {'x':pos[0], 'y':pos[1], 't':t} )
+    if input_desired_mapf_solution == None:
+        desired_paths = copy.deepcopy(input_desired_paths)
+        desired_mapf_solution = copy.deepcopy(raw_solution)
+        for i in range(len(desired_paths)):
+            agent = agent_names[i]
+            desired_mapf_solution['schedule'][agent] = []
+            for t, pos in enumerate(desired_paths[i]):
+                desired_mapf_solution['schedule'][agent].append( {'x':pos[0], 'y':pos[1], 't':t} )
+    else:
+        desired_mapf_solution = copy.deepcopy(input_desired_mapf_solution)
+        desired_paths = []
+        for agent in agent_names:
+            desired_path = [ [pos['x'], pos['y']] for pos in desired_mapf_solution['schedule'][agent] ]
+            desired_paths.append(desired_path)
 
     # TODO v1: first find our ALL possible combinations of obstacles that can be put in order to make cost[desired_paths] < cost[bad_solutions_for_desired_agents_only]
     # then, use those combinations to generate potential desired_mapf_solutions[i] = mapf(obst=comb_i, constr=desired_paths), now considering all agents
@@ -64,6 +74,7 @@ def inv_mapf_incremental(raw_problem, raw_solution, new_obstacles, bad_mapf_solu
             for desired_path in desired_paths:
                 if n == tuple(desired_path[min(t, len(desired_path) - 1)]):
                     print("INVALID DESIRED PATH - Desired path of agent collides with other agents (same cell)")
+                    pdb.set_trace()
                     return False, []
         for desired_path in desired_paths:
             for t in range(min(len(path)-1, len(desired_path)-1)):
@@ -185,15 +196,42 @@ def inv_mapf_incremental(raw_problem, raw_solution, new_obstacles, bad_mapf_solu
         print('WARNING: inv-mapf-incremental did not give us new obstacles...')
         #pdb.set_trace()
 
+    # if converged then enumerate all optimal solutions
+    if find_all_solutions:
+        # https://www.ibm.com/support/pages/using-cplex-examine-alternate-optimal-solutions
+        # Let x{S} be the binary variables. Suppose you have a binary solution x* in available from the most recent optimization. Let N be the subset of S such that x*[n] = 1 for all n in N
+        # Then, add the following constraint:
+        # sum{n in N} x[n] - sum{s in S\N} x[s] <= |N|-1
+        all_solutions = [l_.value]
+        constraint_prev_sols = []
+        constraint_same_l1 = (cp.norm1(l_ - l_original) <= prob.value)
+        while True:
+            print('Obtained %d optimal solutions...' % len(all_solutions))
+            diff = (l_.value==1) * 1 - (l_.value==0) * 1
+            constraint_prev_sols.append( diff @ l_ <= np.sum(l_.value==1) - 1 )
+            prob = cp.Problem(cp.Minimize(cost), constraints + [constraint_same_l1] + constraint_prev_sols)
+            res = prob.solve(solver=cp.GUROBI)
+            if res == float('inf'):
+                print('Number of optimal solutions: %d' % len(all_solutions))
+                all_solution_obstacles = []
+                for sol in all_solutions:
+                    sol_obstacles = []
+                    for i, v in enumerate(sol):
+                        if round(v) == 1:
+                            sol_obstacles.append(list(cells[i]))
+                    all_solution_obstacles.append(sol_obstacles)
+                return True, all_solution_obstacles
+            all_solutions.append(l_.value)
+
     return True, new_obstacles
 
 
-def main_inv_mapf(problem_file, verbose=False, animate=False):
+def main_inv_mapf(problem_file, verbose=False, animate=False, find_all_solutions=False):
     problem_fullpath = EXAMPLES_PATH + "/" + problem_file
-    return main_inv_mapf_fullpath(problem_fullpath, verbose, animate)
+    return main_inv_mapf_fullpath(problem_fullpath, verbose, animate, find_all_solutions)
 
 
-def main_inv_mapf_fullpath(problem_fullpath, verbose=False, animate=False):
+def main_inv_mapf_fullpath(problem_fullpath, verbose=False, animate=False, find_all_solutions=False):
 
     strictly_equal_solution = False
 
@@ -237,13 +275,13 @@ def main_inv_mapf_fullpath(problem_fullpath, verbose=False, animate=False):
     while True:
 
         # obtain obstacles that make, for all i, cost[bad_mapf_solution_i] > cost[mapf(obst=new_obstacles, constraint=desired_paths)]
-        success, new_obstacles = inv_mapf_incremental(raw_problem, raw_solution, new_obstacles, bad_mapf_solutions, desired_paths, agent_names, strictly_lower_cost, verbose)
+        success, new_obstacles2 = inv_mapf_incremental(raw_problem, raw_solution, new_obstacles, bad_mapf_solutions, desired_paths, agent_names, strictly_lower_cost, verbose=verbose)
         if not success:
             print('Could not solve inv-mapf-incremental, i.e. no way to place obstacles such that cost[bad_sol] > cost[desired_sol]')
             return False, []
 
         # solve this new problem (with new obstacles)
-        new_problem = explanations_multi.create_new_problem(raw_problem, desired_paths, agent_names, new_obstacles)
+        new_problem = explanations_multi.create_new_problem(raw_problem, desired_paths, agent_names, new_obstacles2)
         new_filename = "additional/build/new_problem.yaml"
         explanations_multi.create_problem_yaml(new_problem, new_filename)
         solved = explanations_multi.generate_cbs_solution(ROOT_PATH + "/" + new_filename)
@@ -254,7 +292,8 @@ def main_inv_mapf_fullpath(problem_fullpath, verbose=False, animate=False):
 
         # check that this solution has the same cost as the desired solution
         if not strictly_equal_solution:
-            success = explanations_multi.sanity_check2(raw_solution, new_solution, agent_names, desired_paths, new_obstacles)
+            #success = explanations_multi.sanity_check2(raw_solution, new_solution, agent_names, desired_paths, new_obstacles2)
+            success = explanations_multi.is_mapf_solution_valid(new_problem, new_solution, agent_names, desired_paths)
             if success:
                 break
 
@@ -279,25 +318,57 @@ def main_inv_mapf_fullpath(problem_fullpath, verbose=False, animate=False):
 
         # this solution is a bad solution, i.e. its cost must be made higher than the cost with desired_paths
         bad_mapf_solutions.append(copy.deepcopy(new_solution))
+        new_obstacles = new_obstacles2
 
     # solution found!
     print('Success! Found inv-mapf solution')
-    success = explanations_multi.sanity_check2(raw_solution, new_solution, agent_names, desired_paths, new_obstacles)
-    if not success:
-        print('Oops, solution does not pass sanity check')
-        return False, []
-    if animate:
-        explanations_multi.generate_animation(raw_problem, new_problem, new_solution)
-        # debug animation
-        #desired_solution = copy.deepcopy(raw_solution)
-        #for i in range(len(desired_paths)):
-        #    agent = agent_names[i]
-        #    desired_solution['schedule'][agent] = []
-        #    for t, pos in enumerate(desired_paths[i]):
-        #        desired_solution['schedule'][agent].append( {'x':pos[0], 'y':pos[1], 't':t} )
-        #explanations_multi.generate_animation(raw_problem, new_problem, desired_solution)
 
-    return True, new_obstacles
+    # check all or single solution depending on what we want
+    if find_all_solutions:
+
+        success, all_solution_obstacles = inv_mapf_incremental(raw_problem, raw_solution, new_obstacles, bad_mapf_solutions, desired_paths, agent_names, strictly_lower_cost, find_all_solutions=True)
+        good_solution_obstacles = []
+        good_solutions = []
+        for sol_obstacles in all_solution_obstacles:
+            # check if this solution passes sanity check
+            new_problem = explanations_multi.create_new_problem(raw_problem, desired_paths, agent_names, sol_obstacles)
+            new_filename = "additional/build/new_problem.yaml"
+            explanations_multi.create_problem_yaml(new_problem, new_filename)
+            solved = explanations_multi.generate_cbs_solution(ROOT_PATH + "/" + new_filename)
+            if not solved:
+                continue
+            new_solution = explanations_multi.parse_yaml(SOLUTION_YAML)
+            #success = explanations_multi.sanity_check2(raw_solution, new_solution, agent_names, desired_paths, sol_obstacles)
+            success = explanations_multi.is_mapf_solution_valid(new_problem, new_solution, agent_names, desired_paths)
+            if success:
+                good_solution_obstacles.append(sol_obstacles)
+                good_solutions.append([new_problem, new_solution])
+        print('Found %d good solutions' % len(good_solution_obstacles))
+        #if len(good_solution_obstacles) > 1:
+        #    for sol in good_solutions:
+        #        explanations_multi.generate_animation(raw_problem, sol[0], sol[1])
+        #    pdb.set_trace()
+        return True, good_solution_obstacles
+
+    else:
+
+        new_obstacles = new_obstacles2
+        #success = explanations_multi.sanity_check2(raw_solution, new_solution, agent_names, desired_paths, new_obstacles)
+        success = explanations_multi.is_mapf_solution_valid(new_problem, new_solution, agent_names, desired_paths)
+        if not success:
+            print('Oops, solution does not pass sanity check')
+            return False, []
+        if animate:
+            explanations_multi.generate_animation(raw_problem, new_problem, new_solution)
+            # debug animation
+            #desired_solution = copy.deepcopy(raw_solution)
+            #for i in range(len(desired_paths)):
+            #    agent = agent_names[i]
+            #    desired_solution['schedule'][agent] = []
+            #    for t, pos in enumerate(desired_paths[i]):
+            #        desired_solution['schedule'][agent].append( {'x':pos[0], 'y':pos[1], 't':t} )
+            #explanations_multi.generate_animation(raw_problem, new_problem, desired_solution)
+        return True, new_obstacles
 
 
 if __name__ == '__main__':

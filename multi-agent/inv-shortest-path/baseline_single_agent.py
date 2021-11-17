@@ -343,7 +343,8 @@ def main_inv_mapf_fullpath(problem_fullpath, verbose=False, animate=False):
     if not solved:
         return False, []
     new_cbs_solution = explanations_multi.parse_yaml(SOLUTION_YAML)
-    success = explanations_multi.sanity_check2(raw_solution, new_cbs_solution, agent_names, desired_paths, new_obstacles)
+    #success = explanations_multi.sanity_check2(raw_solution, new_cbs_solution, agent_names, desired_paths, new_obstacles)
+    success = explanations_multi.is_mapf_solution_valid(new_problem, new_cbs_solution, agent_names, desired_paths)
 
     # Animation
     if animate and success and len(new_obstacles) > 0:

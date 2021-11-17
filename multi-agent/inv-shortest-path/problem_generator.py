@@ -7,12 +7,13 @@ import copy
 import pdb
 import explanations_multi
 import explanations_multi_incremental
+import explanations_global
 import baseline_single_agent
 from path import *
 #from memory_profiler import profile
 
 ANIMATE = False
-METHOD = 'incr' # 'single', 'multi', 'incr'
+METHOD = 'multi' # 'single', 'multi', 'incr'
 
 def get_simple_graph(filepath, path_unpickable):
     # Parse YAML
@@ -148,6 +149,11 @@ def generate_problem(f, raw_problem, raw_solution):
     elif METHOD == 'incr':
         try:
             success, new_obstacles = explanations_multi_incremental.main_inv_mapf('../'+new_filename, False, ANIMATE)
+        except KeyError:
+            success = False
+    elif METHOD == 'global':
+        try:
+            success, new_obstacles = explanations_global.main_inv_mapf('../'+new_filename, False, ANIMATE)
         except KeyError:
             success = False
     elif METHOD == 'single':

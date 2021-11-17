@@ -3,6 +3,7 @@ import time
 import tabulate
 import explanations_multi
 import explanations_multi_incremental
+import explanations_global
 import baseline_single_agent
 from path import *
 import pdb
@@ -14,7 +15,7 @@ if __name__ == '__main__':
 
     problems = []
 
-    for f in sorted(glob.glob(ROOT_PATH + '/rnd_problems_incr/*.yaml')):
+    for f in sorted(glob.glob(ROOT_PATH + '/rnd_problems_global2/*.yaml')):
 
         print(f)
 
@@ -49,6 +50,18 @@ if __name__ == '__main__':
         len_incr = max(0, len(obst_incr) - len(raw_obst))
         print('Incr: ' + str(success_incr))
 
+        # solve with multi-agent GLOBAL version
+        t1 = time.time()
+        try:
+            success_global, obst_global = explanations_global.main_inv_mapf_fullpath(f, False, ANIMATE)
+        except KeyError:
+            success_global = False
+            obst_global = []
+        t2 = time.time()
+        time_global  = t2 - t1
+        len_global = max(0, len(obst_global) - len(raw_obst))
+        print('Global: ' + str(success_global))
+
         # solve with single-agent version
         t1 = time.time()
         try:
@@ -62,10 +75,10 @@ if __name__ == '__main__':
         print('Single: ' + str(success_single))
 
         # save stats
-        problems.append( [os.path.basename(f), success_multi, len_multi, time_multi, success_incr, len_incr, time_incr, success_single, len_single, time_single] )
+        problems.append( [os.path.basename(f), success_multi, len_multi, time_multi, success_incr, len_incr, time_incr, success_global, len_global, time_global, success_single, len_single, time_single] )
 
         # show table so far
-        table_str = tabulate.tabulate(problems, headers=['Problem','Suc-M','Obs-M','Time-M','Suc-I','Obs-I','Time-I','Suc-S','Obs-S','Time-S'])
+        table_str = tabulate.tabulate(problems, headers=['Problem','Suc-M','Obs-M','Time-M','Suc-I','Obs-I','Time-I','Suc-G','Obs-G','Time-G','Suc-S','Obs-S','Time-S'])
         title_str = 'Results so far'
         print('')
         print('-' * table_str.find('\n'))

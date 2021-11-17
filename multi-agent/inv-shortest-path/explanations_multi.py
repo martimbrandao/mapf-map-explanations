@@ -329,46 +329,13 @@ def sanity_check(new_cbs_solution, agent_names, desired_paths):
     return True
 
 
-def sanity_check2(old_cbs_solution, new_cbs_solution, agent_names, desired_paths, new_obstacles, strict=False):
+def is_mapf_solution_valid(problem, solution, agent_names, desired_paths):
 
-    # cost of optimal solution with old map
-    old_cost = 0
-    for agent in old_cbs_solution['schedule']:
-        old_cost += len(old_cbs_solution['schedule'][agent]) - 1
-
-    # cost of optimal solution with new map
-    new_cost = 0
-    for agent in new_cbs_solution['schedule']:
-        new_cost += len(new_cbs_solution['schedule'][agent]) - 1
-
-    # we expect cost to be equal to that of a solution where selected agents have their desired paths & other agents have old paths
-    new_expected_cost = 0
-    for i, agent_name in enumerate(agent_names):
-        new_expected_cost += len(desired_paths[i]) - 1
-    for agent in old_cbs_solution['schedule']:
-        if agent not in agent_names:
-            new_expected_cost += len(old_cbs_solution['schedule'][agent]) - 1
-    if new_expected_cost != new_cost:
-        print("Multi-Agent ISP Fail (i.e. cost not as expected)")
-        print("old = %d, expected = %d, cost = %d" % (old_cost, new_expected_cost, new_cost))
-        return False
-
-    # if strict-equality then check the new solution respects the desired paths
-    if strict:
-        for i in range(len(desired_paths)):
-            agent = agent_names[i]
-            path = new_cbs_solution['schedule'][agent]
-            for t, pos in enumerate(path):
-                if tuple(desired_paths[i][t]) != (pos['x'], pos['y']):
-                    print('New solution does not respect desired paths')
-                    #pdb.set_trace()
-                    return False
-
-    # Check for collisions in this solution
-    for a in new_cbs_solution['schedule']:
-        path = new_cbs_solution['schedule'][a]
+    # check for collisions in this solution
+    for a in solution['schedule']:
+        path = solution['schedule'][a]
         for pos in path:
-            if [pos['x'],pos['y']] in new_obstacles:
+            if [pos['x'],pos['y']] in problem['map']['obstacles']:
                 print('Collision between new solution and obstacles')
                 return False
         if a not in agent_names:
@@ -390,58 +357,36 @@ def sanity_check2(old_cbs_solution, new_cbs_solution, agent_names, desired_paths
                         print('Collision between desired path and other agents (swap)')
                         return False
     for desired_path in desired_paths:
-        for t in range(new_cbs_solution['statistics']['makespan'], len(desired_path)):
-            for a in new_cbs_solution['schedule']:
+        for t in range(solution['statistics']['makespan'], len(desired_path)):
+            for a in solution['schedule']:
                 if a not in agent_names:
-                    path = new_cbs_solution['schedule'][a]
+                    path = solution['schedule'][a]
                     last_node = (path[-1]['x'], path[-1]['y'])
                     if tuple(desired_path[t]) == last_node:
                         print('Collision between desired path and other agents (goal)')
                         return False
 
-    # Check for collision in the desired solution given by raw_solution + desired_paths
-    desired_solution = copy.deepcopy(old_cbs_solution)
+    # check if solution satisfies desired_paths
+    paths_satisfied = True
     for i in range(len(desired_paths)):
         agent = agent_names[i]
-        desired_solution['schedule'][agent] = []
-        for t, pos in enumerate(desired_paths[i]):
-            desired_solution['schedule'][agent].append( {'x':pos[0], 'y':pos[1], 't':t} )
-    for a in desired_solution['schedule']:
-        path = desired_solution['schedule'][a]
-        for pos in path:
-            if [pos['x'],pos['y']] in new_obstacles:
-                print('Collision between new solution and obstacles')
-                return False
-        if a not in agent_names:
-            # agents at the same cell and same time
-            for t, pos in enumerate(path):
-                n = (pos['x'], pos['y'])
-                for desired_path in desired_paths:
-                    if n == tuple(desired_path[min(t, len(desired_path) - 1)]):
-                        print('Collision between desired path and other agents (cell)')
-                        return False
-            # agents swaping places
-            for desired_path in desired_paths:
-                for t in range(min(len(path)-1, len(desired_path)-1)):
-                    p0 = (path[t]['x'], path[t]['y'])
-                    p1 = (path[t+1]['x'], path[t+1]['y'])
-                    d0 = tuple(desired_path[t])
-                    d1 = tuple(desired_path[t+1])
-                    if p0 == d1 and d0 == p1:
-                        print('Collision between desired path and other agents (swap)')
-                        return False
-    for desired_path in desired_paths:
-        for t in range(desired_solution['statistics']['makespan'], len(desired_path)):
-            for a in desired_solution['schedule']:
-                if a not in agent_names:
-                    path = desired_solution['schedule'][a]
-                    last_node = (path[-1]['x'], path[-1]['y'])
-                    if tuple(desired_path[t]) == last_node:
-                        print('Collision between desired path and other agents (goal)')
-                        return False
+        path = solution['schedule'][agent]
+        for t, pos in enumerate(path):
+            if tuple(desired_paths[i][t]) != (pos['x'], pos['y']):
+                paths_satisfied = False
+                break
+    if paths_satisfied:
+        return True
 
-    print("Multi-Agent ISP Success (i.e. solution passed sanity check)")
-    return True
+    # check if solution has the same cost of on that forces desired_paths to hold
+    constrained_problem = create_new_problem(problem, desired_paths, agent_names, problem['map']['obstacles'])
+    constrained_filename = "additional/build/constrained_problem.yaml"
+    create_problem_yaml(constrained_problem, constrained_filename)
+    solved = generate_cbs_solution_constrained(ROOT_PATH + "/" + constrained_filename)
+    if not solved:
+        return False
+    solution_constrained = parse_yaml(SOLUTION_YAML)
+    return solution['statistics']['cost'] == solution_constrained['statistics']['cost']
 
 
 def limit_mem_and_cpu():
@@ -461,6 +406,21 @@ def generate_cbs_solution(filepath):
     if os.path.exists('output.yaml'):
         os.remove('output.yaml')
     cmd = './cbs -i ' + filepath + ' -o output.yaml'
+    out1, err1 = subprocess.Popen(cmd.split(), preexec_fn=limit_mem_and_cpu, stdout=subprocess.PIPE, stderr=subprocess.PIPE).communicate()
+    success = os.path.exists('output.yaml')
+    #print(out1)
+    #print(err1)
+    os.chdir(ROOT_PATH)
+    return success
+
+
+def generate_cbs_solution_constrained(filepath):
+    os.chdir(CBS_DIR_PATH)
+    #subprocess.run('./cbs -i ' + filepath + ' -o output.yaml', shell=True, capture_output=True)
+    #subprocess.run('./cbs -i ' + filepath + ' -o output.yaml', shell=True)
+    if os.path.exists('output.yaml'):
+        os.remove('output.yaml')
+    cmd = './cbs_areeb -i ' + filepath + ' -o output.yaml'
     out1, err1 = subprocess.Popen(cmd.split(), preexec_fn=limit_mem_and_cpu, stdout=subprocess.PIPE, stderr=subprocess.PIPE).communicate()
     success = os.path.exists('output.yaml')
     #print(out1)
@@ -516,7 +476,8 @@ def main_inv_mapf_fullpath(problem_fullpath, verbose=False, animate=False):
     if not solved:
         return False, []
     new_cbs_solution = parse_yaml(SOLUTION_YAML)
-    success = sanity_check2(raw_solution, new_cbs_solution, agent_names, desired_paths, new_obstacles)
+    #success = sanity_check2(raw_solution, new_cbs_solution, agent_names, desired_paths, new_obstacles)
+    success = is_mapf_solution_valid(new_problem, new_cbs_solution, agent_names, desired_paths)
 
     # Animation
     if animate:
