@@ -13,7 +13,7 @@ import pdb
 import gc
 # from additional import shortest_path as sp
 
-MAX_TIME = 10  # Maximum search time (in seconds)...
+MAX_TIME = 60  # Maximum search time (in seconds)...
 MAX_VIRTUAL_MEMORY = 8 * 1024 * 1024 * 1024 # Maximal virtual memory for subprocesses (in bytes)...
 
 def create_problem_yaml(problem_dct, filename):
@@ -268,9 +268,6 @@ def inv_mapf(graph, raw_solution, desired_paths, agent_names, verbose=False):
                 # sum_i a_ij * pi_i + lambda_j = edge_w,   for all j not in desired path
                 constraints.append(cp.sum(cp.multiply(A[:, j], pi_vector[i])) + lambda_vector[i][j] == edge_w)
                 # lambda >= 0, for all j not in desired path.
-                # NOTE THIS IS DIFFERENT FROM ORIGINAL CONSTRAINTS (ORIGINAL: >= 0)
-                # Otherwise new obstacles are not created
-                # probably justified because this is a 'sensitivity' parameter
                 constraints.append(lambda_vector[i][j] >= 0)
     # l_[node] == 0 for all nodes in agents' paths
     for n in nodes_passed:
@@ -281,7 +278,7 @@ def inv_mapf(graph, raw_solution, desired_paths, agent_names, verbose=False):
 
     # solve with cvxpy
     prob = cp.Problem(cp.Minimize(cost), constraints)
-    value = prob.solve(solver=cp.GUROBI) #, Threads=4, TimeLimit=30)
+    value = prob.solve(solver=cp.GUROBI) #, Threads=4, TimeLimit=MAX_TIME)
     if value == float('inf'):
         print("inverse shortest path FAILED")
         return []
@@ -329,7 +326,52 @@ def sanity_check(new_cbs_solution, agent_names, desired_paths):
     return True
 
 
-def is_mapf_solution_valid(problem, solution, agent_names, desired_paths):
+def does_mapf_solution_satisfy_desired_paths_with_other_agents_fixed(new_problem, raw_solution, new_solution, agent_names, desired_paths):
+
+    # check for collisions in this solution (with obstacles)
+    for a in new_solution['schedule']:
+        path = new_solution['schedule'][a]
+        for pos in path:
+            if [pos['x'],pos['y']] in new_problem['map']['obstacles']:
+                print('Collision between new solution and obstacles')
+                return False
+
+    # check for collisions in this solution (with other agents)
+    for a in new_solution['schedule']:
+        pathA = [(pos['x'], pos['y']) for pos in new_solution['schedule'][a]]
+        for b in new_solution['schedule']:
+            if a == b:
+                continue
+            pathB = [(pos['x'], pos['y']) for pos in new_solution['schedule'][b]]
+            # agents at the same cell and same time
+            for t in range(max(len(pathA),len(pathB))):
+                if pathA[min(t,len(pathA)-1)] == pathB[min(t,len(pathB)-1)]:
+                    print('Collision between two agents (cell)')
+                    return False
+            # agents swaping places
+            for t in range(min(len(pathA)-1,len(pathB)-1)):
+                if pathA[t] == pathB[t+1] and pathB[t] == pathA[t+1]:
+                    print('Collision between two agents (swap)')
+                    return False
+
+    # desired solution is where our agents take desired paths, others fixed
+    desired_mapf_solution = copy.deepcopy(raw_solution)
+    for i in range(len(desired_paths)):
+        agent = agent_names[i]
+        desired_mapf_solution['schedule'][agent] = []
+        for t, pos in enumerate(desired_paths[i]):
+            desired_mapf_solution['schedule'][agent].append( {'x':pos[0], 'y':pos[1], 't':t} )
+
+    # see if new_solution has the same cost as desired_solution (i.e. whether desired solution is optimal)
+    desired_mapf_solution['statistics']['cost'] = 0
+    for a in desired_mapf_solution['schedule']:
+        path = desired_mapf_solution['schedule'][a]
+        desired_mapf_solution['statistics']['cost'] += len(path) - 1
+
+    return new_solution['statistics']['cost'] == desired_mapf_solution['statistics']['cost']
+
+
+def does_mapf_solution_satisfy_desired_paths(problem, solution, agent_names, desired_paths):
 
     # check for collisions in this solution
     for a in solution['schedule']:
@@ -338,47 +380,53 @@ def is_mapf_solution_valid(problem, solution, agent_names, desired_paths):
             if [pos['x'],pos['y']] in problem['map']['obstacles']:
                 print('Collision between new solution and obstacles')
                 return False
-        if a not in agent_names:
-            # agents at the same cell and same time
-            for t, pos in enumerate(path):
-                n = (pos['x'], pos['y'])
-                for desired_path in desired_paths:
-                    if n == tuple(desired_path[min(t, len(desired_path) - 1)]):
-                        print('Collision between desired path and other agents (cell)')
-                        return False
-            # agents swaping places
-            for desired_path in desired_paths:
-                for t in range(min(len(path)-1, len(desired_path)-1)):
-                    p0 = (path[t]['x'], path[t]['y'])
-                    p1 = (path[t+1]['x'], path[t+1]['y'])
-                    d0 = tuple(desired_path[t])
-                    d1 = tuple(desired_path[t+1])
-                    if p0 == d1 and d0 == p1:
-                        print('Collision between desired path and other agents (swap)')
-                        return False
-    for desired_path in desired_paths:
-        for t in range(solution['statistics']['makespan'], len(desired_path)):
-            for a in solution['schedule']:
-                if a not in agent_names:
-                    path = solution['schedule'][a]
-                    last_node = (path[-1]['x'], path[-1]['y'])
-                    if tuple(desired_path[t]) == last_node:
-                        print('Collision between desired path and other agents (goal)')
-                        return False
 
     # check if solution satisfies desired_paths
     paths_satisfied = True
     for i in range(len(desired_paths)):
         agent = agent_names[i]
         path = solution['schedule'][agent]
+        if len(desired_paths[i]) != len(path):
+            paths_satisfied = False
+            break
         for t, pos in enumerate(path):
             if tuple(desired_paths[i][t]) != (pos['x'], pos['y']):
                 paths_satisfied = False
                 break
     if paths_satisfied:
+        # check for collisions with desired paths
+        for a in solution['schedule']:
+            path = solution['schedule'][a]
+            if a not in agent_names:
+                # agents at the same cell and same time
+                for t, pos in enumerate(path):
+                    n = (pos['x'], pos['y'])
+                    for desired_path in desired_paths:
+                        if n == tuple(desired_path[min(t, len(desired_path) - 1)]):
+                            print('Collision between desired path and other agents (cell)')
+                            return False
+                # agents swaping places
+                for desired_path in desired_paths:
+                    for t in range(min(len(path)-1, len(desired_path)-1)):
+                        p0 = (path[t]['x'], path[t]['y'])
+                        p1 = (path[t+1]['x'], path[t+1]['y'])
+                        d0 = tuple(desired_path[t])
+                        d1 = tuple(desired_path[t+1])
+                        if p0 == d1 and d0 == p1:
+                            print('Collision between desired path and other agents (swap)')
+                            return False
+        for desired_path in desired_paths:
+            for t in range(solution['statistics']['makespan'], len(desired_path)):
+                for a in solution['schedule']:
+                    if a not in agent_names:
+                        path = solution['schedule'][a]
+                        last_node = (path[-1]['x'], path[-1]['y'])
+                        if tuple(desired_path[t]) == last_node:
+                            print('Collision between desired path and other agents (goal)')
+                            return False
         return True
 
-    # check if solution has the same cost of on that forces desired_paths to hold
+    # check if solution has the same cost as that obtained when we force agents to follow desired_paths
     constrained_problem = create_new_problem(problem, desired_paths, agent_names, problem['map']['obstacles'])
     constrained_filename = "additional/build/constrained_problem.yaml"
     create_problem_yaml(constrained_problem, constrained_filename)
@@ -386,7 +434,15 @@ def is_mapf_solution_valid(problem, solution, agent_names, desired_paths):
     if not solved:
         return False
     solution_constrained = parse_yaml(SOLUTION_YAML)
-    return solution['statistics']['cost'] == solution_constrained['statistics']['cost']
+    if 'statistics' not in solution or 'statistics' not in solution_constrained:
+        print('problem')
+        pdb.set_trace()
+    solution_optimal = solution['statistics']['cost'] == solution_constrained['statistics']['cost']
+    if not solution_optimal:
+        print('Desired paths not optimal (cost = %d, cost_constrained = %d)' % (solution['statistics']['cost'], solution_constrained['statistics']['cost']))
+    else:
+        print('Desired paths are optimal')
+    return solution_optimal
 
 
 def limit_mem_and_cpu():
@@ -429,9 +485,12 @@ def generate_cbs_solution_constrained(filepath):
     return success
 
 
-def generate_animation(old_problem, new_problem, new_schedule):
-    animation = visualize.Animation(old_problem, new_problem, new_schedule)
-    animation.show()
+def generate_animation(old_problem, new_problem, new_schedule, still=False, save='', show_waypoints=False):
+    animation = visualize.Animation(old_problem, new_problem, new_schedule, still, show_waypoints)
+    if still and save != '':
+        animation.savefig(save)
+    else:
+        animation.show()
 
 
 def main_inv_mapf(problem_file, verbose=False, animate=False):
@@ -476,14 +535,21 @@ def main_inv_mapf_fullpath(problem_fullpath, verbose=False, animate=False):
     if not solved:
         return False, []
     new_cbs_solution = parse_yaml(SOLUTION_YAML)
-    #success = sanity_check2(raw_solution, new_cbs_solution, agent_names, desired_paths, new_obstacles)
-    success = is_mapf_solution_valid(new_problem, new_cbs_solution, agent_names, desired_paths)
+    success = does_mapf_solution_satisfy_desired_paths_with_other_agents_fixed(new_problem, raw_solution, new_cbs_solution, agent_names, desired_paths)
+
+    print('Success: ' + str(success))
 
     # Animation
     if animate:
+        #print('raw_solution cost: %d' % raw_solution['statistics']['cost'])
         #generate_animation(raw_problem, new_problem, raw_solution)
-        #generate_animation(raw_problem, new_problem, new_schedule)
+
+        #print('opt_solution_our_meap cost: %d' % new_cbs_solution['statistics']['cost'])
         generate_animation(raw_problem, new_problem, new_cbs_solution)
+
+        #solution_constrained = parse_yaml(SOLUTION_YAML)
+        #print('opt_constr_solution_our_map cost: %d' % solution_constrained['statistics']['cost'])
+        #generate_animation(raw_problem, new_problem, solution_constrained)
 
     # Return
     return success, new_obstacles

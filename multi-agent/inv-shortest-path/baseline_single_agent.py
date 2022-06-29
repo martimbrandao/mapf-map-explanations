@@ -171,9 +171,6 @@ def isp_discrete(graph, desired_path, area_costs=None, allowed_area_types=None, 
         idx = len(allowed_area_types) * i
         constraints.append(cp.sum(l_[idx:idx + len(allowed_area_types)]) == 1)
     # lambda >= 0, for all j not in desired path.
-    # NOTE THIS IS DIFFERENT FROM ORIGINAL CONSTRAINTS (ORIGINAL: >= 0)
-    # Otherwise new obstacles are not created
-    # probably justified because this is a 'sensitivity' parameter
     for j in range(len(edges)):
         if xzero[j] == 0:
             constraints.append(lambda_[j] >= 0)
@@ -282,12 +279,12 @@ def isp_continuous(graph, desired_path, area_costs=None, allowed_area_types=None
     return new_graph, success
 
 
-def main_inv_mapf(problem_file, verbose=False, animate=False):
+def main_inv_mapf(problem_file, verbose=False, animate=False, question_partial_plan=False):
     problem_fullpath = EXAMPLES_PATH + "/" + problem_file
-    return main_inv_mapf_fullpath(problem_fullpath, verbose, animate)
+    return main_inv_mapf_fullpath(problem_fullpath, verbose, animate, question_partial_plan)
 
 
-def main_inv_mapf_fullpath(problem_fullpath, verbose=False, animate=False):
+def main_inv_mapf_fullpath(problem_fullpath, verbose=False, animate=False, question_partial_plan=False):
 
     # Parsing and generating CBS solution of original MULTI-AGENT problem
     solved = explanations_multi.generate_cbs_solution(problem_fullpath)
@@ -303,9 +300,9 @@ def main_inv_mapf_fullpath(problem_fullpath, verbose=False, animate=False):
         if agent.get('waypoints') is not None:
             desired_paths.append(agent['waypoints'])
             agent_names.append(agent['name'])
-    if len(desired_paths) > 1:
-      print('For now, only supporting this baseline if there is a desired path for a single agent only')
-      exit()
+    #if len(desired_paths) > 1:
+    #  print('For now, only supporting this baseline if there is a desired path for a single agent only')
+    #  return False, []
 
     # Get paths (schedule) of all agents except those that have a desired path
     ori_makespan = copy.deepcopy(raw_solution['statistics']['makespan'])
@@ -315,22 +312,39 @@ def main_inv_mapf_fullpath(problem_fullpath, verbose=False, animate=False):
 
     # Get set of all the nodes that are ever passed by any agent (other than ours) at any time
     nodes_passed = []
-    for path in schedule.values():
-        for t, pos in enumerate(path):
-            n = (pos['x'], pos['y'])
-            nodes_passed.append(n)
+    for path in raw_solution['schedule'].values():
+        nodes_passed.append( (path[-1]['x'], path[-1]['y']) )
+    if not question_partial_plan:
+        for path in schedule.values():
+            for t, pos in enumerate(path):
+                n = (pos['x'], pos['y'])
+                nodes_passed.append(n)
+
+    # Make cells from desired paths also forcefully free
+    for i in range(len(desired_paths)):
+        for x in desired_paths[i]:
+            nodes_passed.append( (x[0],x[1]) )
 
     # Get graph for single-agent ISP
     graph, old_dct = parse_yaml(problem_fullpath)
 
-    # Run single-agent ISP with the extra constraint that we cannot add obstacles to places that other agents currently pass
-    desired_path = [(x[0], x[1]) for x in desired_paths[0]]
-    new_graph, success_isp, new_obstacles = isp_discrete(graph, desired_path, forced_free_locations=nodes_passed)
-    if not success_isp:
-      return False, []
-    if len(new_obstacles) == 0:
-      print('No obstacles added/removed! Means single-agent approach cannot solve this multi-agent ISP problem')
-      return False, []
+    # Get new obstacles for each desired path / constrained agent
+    union_new_obstacles = set()
+    for constrained_path in range(len(desired_paths)):
+
+        # Run single-agent ISP with the extra constraint that we cannot add obstacles to places that other agents currently pass
+        desired_path = [(x[0], x[1]) for x in desired_paths[constrained_path]]
+        new_graph, success_isp, new_obstacles = isp_discrete(graph, desired_path, forced_free_locations=nodes_passed)
+        if not success_isp:
+          return False, []
+        if len(new_obstacles) == 0:
+          print('No obstacles added/removed! Means single-agent approach cannot solve this multi-agent ISP problem')
+          return False, []
+
+        union_new_obstacles = union_new_obstacles | set([(x[0],x[1]) for x in new_obstacles])
+
+    # Take the union of the obstacles
+    new_obstacles = [[x[0],x[1]] for x in list(union_new_obstacles)]
 
     # Create new schedule and problem dict and created a new problem yaml file
     new_schedule = explanations_multi.create_new_schedule(raw_solution, desired_paths, agent_names)
@@ -343,12 +357,27 @@ def main_inv_mapf_fullpath(problem_fullpath, verbose=False, animate=False):
     if not solved:
         return False, []
     new_cbs_solution = explanations_multi.parse_yaml(SOLUTION_YAML)
-    #success = explanations_multi.sanity_check2(raw_solution, new_cbs_solution, agent_names, desired_paths, new_obstacles)
-    success = explanations_multi.is_mapf_solution_valid(new_problem, new_cbs_solution, agent_names, desired_paths)
+    if question_partial_plan:
+        success = explanations_multi.does_mapf_solution_satisfy_desired_paths(new_problem, new_cbs_solution, agent_names, desired_paths)
+    else:
+        success = explanations_multi.does_mapf_solution_satisfy_desired_paths_with_other_agents_fixed(new_problem, raw_solution, new_cbs_solution, agent_names, desired_paths)
 
     # Animation
     if animate and success and len(new_obstacles) > 0:
-        explanations_multi.generate_animation(raw_problem, new_problem, new_schedule)
+        print('Showing original plan on new map')
+        explanations_multi.generate_animation(raw_problem, new_problem, raw_solution)
+
+        print('Showing desired plan on new map')
+        desired_mapf_solution = copy.deepcopy(raw_solution)
+        for i in range(len(desired_paths)):
+            agent = agent_names[i]
+            desired_mapf_solution['schedule'][agent] = []
+            for t, pos in enumerate(desired_paths[i]):
+                desired_mapf_solution['schedule'][agent].append( {'x':pos[0], 'y':pos[1], 't':t} )
+        explanations_multi.generate_animation(raw_problem, new_problem, desired_mapf_solution)
+
+        print('Showing new solution for new map')
+        explanations_multi.generate_animation(raw_problem, new_problem, new_cbs_solution)
 
     return success, new_obstacles
 
@@ -359,5 +388,6 @@ if __name__ == '__main__':
     parser.add_argument("problem_file", help="input problem filepath")
     parser.add_argument("-v", "--verbose", action="store_true", help="outputs debug information")
     parser.add_argument("-a", "--animate", action="store_true", help="shows animation")
+    parser.add_argument("-q", "--question-partial-plan", action="store_true", help="solves question for partial (instead of full) plan, i.e. 'why do agents A not take paths D?' instead of 'why not full plan X?'")
     args = parser.parse_args()
-    main_inv_map(args.problem_file, args.verbose, args.animate)
+    main_inv_mapf(args.problem_file, args.verbose, args.animate, args.question_partial_plan)

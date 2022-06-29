@@ -12,11 +12,16 @@ import copy
 import time
 import pdb
 
+SAVE_FIGURES = False
 
-def inv_mapf_incremental(raw_problem, raw_solution, new_obstacles, bad_mapf_solutions, input_desired_paths, agent_names, strictly_lower_cost=False, input_desired_mapf_solution=None, find_all_solutions=False, verbose=False):
+global_problem_fullpath = ''
+
+
+def inv_mapf_incremental(raw_problem, raw_solution, new_obstacles, bad_mapf_solutions, input_desired_paths, agent_names, strictly_lower_cost=False, obst_over_desired_sol=False, input_desired_mapf_solution=None, find_all_solutions=False, verbose=False):
 
     # desired solution
     if input_desired_mapf_solution == None:
+        # if no desired solution was given, assume desired_paths with other agents fixed
         desired_paths = copy.deepcopy(input_desired_paths)
         desired_mapf_solution = copy.deepcopy(raw_solution)
         for i in range(len(desired_paths)):
@@ -25,6 +30,7 @@ def inv_mapf_incremental(raw_problem, raw_solution, new_obstacles, bad_mapf_solu
             for t, pos in enumerate(desired_paths[i]):
                 desired_mapf_solution['schedule'][agent].append( {'x':pos[0], 'y':pos[1], 't':t} )
     else:
+        # desired solution given as input
         desired_mapf_solution = copy.deepcopy(input_desired_mapf_solution)
         desired_paths = []
         for agent in agent_names:
@@ -68,30 +74,32 @@ def inv_mapf_incremental(raw_problem, raw_solution, new_obstacles, bad_mapf_solu
         schedule.pop(agent_name)
 
     # check validity of desired path
-    for path in schedule.values():
-        for t, pos in enumerate(path):
-            n = (pos['x'], pos['y'])
+    if True:
+        for path in schedule.values():
+            for t, pos in enumerate(path):
+                n = (pos['x'], pos['y'])
+                for desired_path in desired_paths:
+                    if n == tuple(desired_path[min(t, len(desired_path) - 1)]):
+                        print("INVALID DESIRED PATH - Desired path of agent collides with other agents (same cell)")
+                        pdb.set_trace()
+                        return False, []
             for desired_path in desired_paths:
-                if n == tuple(desired_path[min(t, len(desired_path) - 1)]):
-                    print("INVALID DESIRED PATH - Desired path of agent collides with other agents (same cell)")
-                    pdb.set_trace()
-                    return False, []
+                for t in range(min(len(path)-1, len(desired_path)-1)):
+                    p0 = (path[t]['x'], path[t]['y'])
+                    p1 = (path[t+1]['x'], path[t+1]['y'])
+                    d0 = tuple(desired_path[t])
+                    d1 = tuple(desired_path[t+1])
+                    if p0 == d1 and d0 == p1:
+                        print("INVALID DESIRED PATH - Desired path of agent collides with other agents (agent swap)")
+                        pdb.set_trace()
+                        return False, []
         for desired_path in desired_paths:
-            for t in range(min(len(path)-1, len(desired_path)-1)):
-                p0 = (path[t]['x'], path[t]['y'])
-                p1 = (path[t+1]['x'], path[t+1]['y'])
-                d0 = tuple(desired_path[t])
-                d1 = tuple(desired_path[t+1])
-                if p0 == d1 and d0 == p1:
-                    print("INVALID DESIRED PATH - Desired path of agent collides with other agents (agent swap)")
-                    return False, []
-    for desired_path in desired_paths:
-        for t in range(ori_makespan, len(desired_path)):
-            for path in schedule.values():
-                last_node = (path[-1]['x'], path[-1]['y'])
-                if tuple(desired_path[t]) == last_node:
-                    print("INVALID DESIRED PATH - Desired path of agent collides with other agents (goal cell)")
-                    return False, []
+            for t in range(ori_makespan, len(desired_path)):
+                for path in schedule.values():
+                    last_node = (path[-1]['x'], path[-1]['y'])
+                    if tuple(desired_path[t]) == last_node:
+                        print("INVALID DESIRED PATH - Desired path of agent collides with other agents (goal cell)")
+                        return False, []
 
     # Determine max t
     max_t = 0
@@ -144,38 +152,68 @@ def inv_mapf_incremental(raw_problem, raw_solution, new_obstacles, bad_mapf_solu
     # Constraints
     constraints = []
 
-    # Constraints [G @ l_ <= h]
-    #     sum_(j in good_path) 1000 * l_j + 1 <= sum_(j in bad_path) 1000 * l_j + 1
-    # so: sum_(j in good_path) 1000 * l_j - sum_(j in bad_path) 1000 * l_j <= sum_(j in bad_path) 1 - sum_(j in good_path) 1
-    G = []
-    h = []
-    for bad_sol in bad_mapf_solutions:
-        Gline = [0.0] * len(l_original)
-        hline = 0
+    # Constraints [G @ l_ <= h]  (v1.0)
+    if False:
+      #     sum_(j in good_path) 1000 * l_j + 1 <= sum_(j in bad_path) 1000 * l_j + 1
+      # so: sum_(j in good_path) 1000 * l_j - sum_(j in bad_path) 1000 * l_j <= sum_(j in bad_path) 1 - sum_(j in good_path) 1
+      G = []
+      h = []
+      for bad_sol in bad_mapf_solutions:
+          Gline = [0.0] * len(l_original)
+          hline = 0
+          for agent in desired_mapf_solution['schedule']:
+              for pos in desired_mapf_solution['schedule'][agent]:
+                  j = node2lidx[ (pos['x'], pos['y']) ]
+                  Gline[j] += 1000
+                  hline -= 1
+          for agent in bad_sol['schedule']:
+              for pos in bad_sol['schedule'][agent]:
+                  j = node2lidx[ (pos['x'], pos['y']) ]
+                  Gline[j] -= 1000
+                  hline += 1
+          # NOTE: this is to force strict inequality "<" instead of "<=" (i.e. to force solution returned by CBS to be equal to ours, not just same cost)
+          if strictly_lower_cost:
+              hline -= 0.1
+          G.append(Gline)
+          h.append(hline)
+      G = np.array(G)
+      h = np.array(h)
+      constraints.append(G @ l_ <= h)
+
+    # Constraints [sum_(j in bad_path) l_j >= 1]  (v2.0)
+    if True:
+      G = []
+      h = []
+      for bad_sol in bad_mapf_solutions:
+          Gline = [0.0] * len(l_original)
+          for agent in bad_sol['schedule']:
+              for pos in bad_sol['schedule'][agent]:
+                  j = node2lidx[ (pos['x'], pos['y']) ]
+                  Gline[j] += 1
+          G.append(Gline)
+          h.append(1)
+      G = np.array(G)
+      h = np.array(h)
+      constraints.append(G @ l_ >= h)
+
+    # Constraints l(desired_mapf_solution) = 0, i.e. don't add obstacles to cells used by our desired solution
+    if obst_over_desired_sol:
+        for agent in desired_mapf_solution['schedule']:
+            pos = desired_mapf_solution['schedule'][agent][0]
+            j = node2lidx[ (pos['x'], pos['y']) ]
+            constraints.append(l_[j] == 0)
+            pos = desired_mapf_solution['schedule'][agent][-1]
+            j = node2lidx[ (pos['x'], pos['y']) ]
+            constraints.append(l_[j] == 0)
+        for agent in agent_names:
+            for pos in desired_mapf_solution['schedule'][agent]:
+                j = node2lidx[ (pos['x'], pos['y']) ]
+                constraints.append(l_[j] == 0)
+    else:
         for agent in desired_mapf_solution['schedule']:
             for pos in desired_mapf_solution['schedule'][agent]:
                 j = node2lidx[ (pos['x'], pos['y']) ]
-                Gline[j] += 1000
-                hline -= 1
-        for agent in bad_sol['schedule']:
-            for pos in bad_sol['schedule'][agent]:
-                j = node2lidx[ (pos['x'], pos['y']) ]
-                Gline[j] -= 1000
-                hline += 1
-        # NOTE: this is to force strict inequality "<" instead of "<=" (i.e. to force solution returned by CBS to be equal to ours, not just same cost)
-        if strictly_lower_cost:
-            hline -= 0.1
-        G.append(Gline)
-        h.append(hline)
-    G = np.array(G)
-    h = np.array(h)
-    constraints.append(G @ l_ <= h)
-
-    # Constraints l(desired_mapf_solution) = 0, i.e. don't add obstacles to cells used by our desired solution
-    for agent in desired_mapf_solution['schedule']:
-        for pos in desired_mapf_solution['schedule'][agent]:
-            j = node2lidx[ (pos['x'], pos['y']) ]
-            constraints.append(l_[j] == 0)
+                constraints.append(l_[j] == 0)
 
     # Solve with cvxpy
     prob = cp.Problem(cp.Minimize(cost), constraints)
@@ -226,14 +264,15 @@ def inv_mapf_incremental(raw_problem, raw_solution, new_obstacles, bad_mapf_solu
     return True, new_obstacles
 
 
-def main_inv_mapf(problem_file, verbose=False, animate=False, find_all_solutions=False):
+def main_inv_mapf(problem_file, verbose=False, animate=False, question_partial_plan=False, find_all_solutions=False):
     problem_fullpath = EXAMPLES_PATH + "/" + problem_file
-    return main_inv_mapf_fullpath(problem_fullpath, verbose, animate, find_all_solutions)
+    return main_inv_mapf_fullpath(problem_fullpath, verbose, animate, question_partial_plan, find_all_solutions)
 
 
-def main_inv_mapf_fullpath(problem_fullpath, verbose=False, animate=False, find_all_solutions=False):
+def main_inv_mapf_fullpath(problem_fullpath, verbose=False, animate=False, question_partial_plan=False, find_all_solutions=False):
 
-    strictly_equal_solution = False
+    global global_problem_fullpath
+    global_problem_fullpath = problem_fullpath
 
     # Parsing and generating CBS solution of original problem file
     raw_problem = explanations_multi.parse_yaml(problem_fullpath)
@@ -242,6 +281,34 @@ def main_inv_mapf_fullpath(problem_fullpath, verbose=False, animate=False, find_
         print('Cannot solve original problem')
         return False, []
     raw_solution = explanations_multi.parse_yaml(SOLUTION_YAML)
+
+    # Find MAPF plan := mapf(orig_map) s.t. desired_paths
+    solution_constrained = None
+    if question_partial_plan:
+        solved = explanations_multi.generate_cbs_solution_constrained(problem_fullpath)
+        if not solved:
+            print('Cannot solve original problem s.t. desired paths')
+            return False, []
+        solution_constrained = explanations_multi.parse_yaml(SOLUTION_YAML)
+
+    # straightforward InvMAPF with fixed paths:
+    # find a map that leads to the MAPF plan := all agents as before but our agents with desired paths
+    return main_inv_mapf_prob(raw_problem, raw_solution, obst_over_desired_sol=False, verbose=verbose, animate=animate, question_partial_plan=question_partial_plan, desired_mapf_solution=solution_constrained, find_all_solutions=find_all_solutions)
+
+    #if question_partial_plan:
+    #    # try without letting obstacles over desired mapf sol
+    #    success, new_obstacles = main_inv_mapf_prob(raw_problem, raw_solution, obst_over_desired_sol=False, verbose=verbose, animate=animate, question_partial_plan=question_partial_plan, desired_mapf_solution=solution_constrained, find_all_solutions=find_all_solutions)
+    #    if success:
+    #        return success, new_obstacles
+    #    # now try while letting obstacles over desired mapf sol
+    #    return main_inv_mapf_prob(raw_problem, raw_solution, obst_over_desired_sol=True, verbose=verbose, animate=animate, question_partial_plan=question_partial_plan, desired_mapf_solution=solution_constrained, find_all_solutions=find_all_solutions)        
+    #else:
+    #    return main_inv_mapf_prob(raw_problem, raw_solution, obst_over_desired_sol=False, verbose=verbose, animate=animate, question_partial_plan=question_partial_plan, desired_mapf_solution=solution_constrained, find_all_solutions=find_all_solutions)
+
+
+def main_inv_mapf_prob(raw_problem, raw_solution, obst_over_desired_sol=False, verbose=False, animate=False,  question_partial_plan=False, desired_mapf_solution=None, find_all_solutions=False):
+
+    strictly_equal_solution = False
 
     # Handling desired path of the agent and get agent name
     desired_paths = []
@@ -260,6 +327,9 @@ def main_inv_mapf_fullpath(problem_fullpath, verbose=False, animate=False, find_
     if desired_paths_already_optimal:
         print('Desired paths already optimal')
         return True, []
+    if desired_mapf_solution != None and raw_solution['statistics']['cost'] == desired_mapf_solution['statistics']['cost']:
+        print('Desired paths already optimal')
+        return True, []
 
     # initial obstacles
     new_obstacles = copy.deepcopy(raw_problem['map']['obstacles'])
@@ -272,10 +342,17 @@ def main_inv_mapf_fullpath(problem_fullpath, verbose=False, animate=False, find_
     strictly_lower_cost = strictly_equal_solution
 
     # loop until desired path is in optimal solution
+    n_iterations = 0
     while True:
 
-        # obtain obstacles that make, for all i, cost[bad_mapf_solution_i] > cost[mapf(obst=new_obstacles, constraint=desired_paths)]
-        success, new_obstacles2 = inv_mapf_incremental(raw_problem, raw_solution, new_obstacles, bad_mapf_solutions, desired_paths, agent_names, strictly_lower_cost, verbose=verbose)
+        # limit iterations
+        if n_iterations > 50:
+            print('Could not solve problem within max-iterations')
+            return False, []
+        n_iterations += 1
+
+        # obtain obstacles that make, for all i, cost[bad_mapf_solution_i] >= cost[mapf(obst=new_obstacles, constraint=desired_paths)]
+        success, new_obstacles2 = inv_mapf_incremental(raw_problem, raw_solution, new_obstacles, bad_mapf_solutions, desired_paths, agent_names, strictly_lower_cost, obst_over_desired_sol, desired_mapf_solution, verbose=verbose)
         if not success:
             print('Could not solve inv-mapf-incremental, i.e. no way to place obstacles such that cost[bad_sol] > cost[desired_sol]')
             return False, []
@@ -292,12 +369,14 @@ def main_inv_mapf_fullpath(problem_fullpath, verbose=False, animate=False, find_
 
         # check that this solution has the same cost as the desired solution
         if not strictly_equal_solution:
-            #success = explanations_multi.sanity_check2(raw_solution, new_solution, agent_names, desired_paths, new_obstacles2)
-            success = explanations_multi.is_mapf_solution_valid(new_problem, new_solution, agent_names, desired_paths)
+            if question_partial_plan:
+                success = explanations_multi.does_mapf_solution_satisfy_desired_paths(new_problem, new_solution, agent_names, desired_paths)
+            else:
+                success = explanations_multi.does_mapf_solution_satisfy_desired_paths_with_other_agents_fixed(new_problem, raw_solution, new_solution, agent_names, desired_paths)
             if success:
                 break
 
-        # check desired paths already optimal
+        # check desired paths already optimal (strictly equal case)
         desired_paths_already_optimal = True
         for i in range(len(desired_paths)):
             agent = agent_names[i]
@@ -312,6 +391,26 @@ def main_inv_mapf_fullpath(problem_fullpath, verbose=False, animate=False, find_
         if desired_paths_already_optimal:
             break
 
+
+        # animation for debug
+        #print('Showing desired plan on new map')
+        #desired_mapf_solution2 = copy.deepcopy(raw_solution)
+        #for i in range(len(desired_paths)):
+        #    agent = agent_names[i]
+        #    desired_mapf_solution2['schedule'][agent] = []
+        #    for t, pos in enumerate(desired_paths[i]):
+        #        desired_mapf_solution2['schedule'][agent].append( {'x':pos[0], 'y':pos[1], 't':t} )
+        #desired_mapf_solution2['statistics']['cost'] = 0
+        #for a in desired_mapf_solution2['schedule']:
+        #    path = desired_mapf_solution2['schedule'][a]
+        #    desired_mapf_solution2['statistics']['cost'] += len(path) - 1
+        #explanations_multi.generate_animation(raw_problem, new_problem, desired_mapf_solution)
+        #pdb.set_trace()
+        #
+        #print('Showing new solution for new map')
+        #explanations_multi.generate_animation(raw_problem, new_problem, new_solution)
+
+
         # if we are not making any progress then try to enforce strictly lower cost of our solution
         if new_solution['schedule'] == bad_mapf_solutions[-1]['schedule'] and strictly_lower_cost == False:
             strictly_lower_cost = True
@@ -323,10 +422,13 @@ def main_inv_mapf_fullpath(problem_fullpath, verbose=False, animate=False, find_
     # solution found!
     print('Success! Found inv-mapf solution')
 
+    #print('Showing new solution for new map')
+    #explanations_multi.generate_animation(raw_problem, new_problem, new_solution)
+
     # check all or single solution depending on what we want
     if find_all_solutions:
 
-        success, all_solution_obstacles = inv_mapf_incremental(raw_problem, raw_solution, new_obstacles, bad_mapf_solutions, desired_paths, agent_names, strictly_lower_cost, find_all_solutions=True)
+        success, all_solution_obstacles = inv_mapf_incremental(raw_problem, raw_solution, new_obstacles, bad_mapf_solutions, desired_paths, agent_names, strictly_lower_cost, obst_over_desired_sol, desired_mapf_solution, find_all_solutions=True)
         good_solution_obstacles = []
         good_solutions = []
         for sol_obstacles in all_solution_obstacles:
@@ -338,8 +440,10 @@ def main_inv_mapf_fullpath(problem_fullpath, verbose=False, animate=False, find_
             if not solved:
                 continue
             new_solution = explanations_multi.parse_yaml(SOLUTION_YAML)
-            #success = explanations_multi.sanity_check2(raw_solution, new_solution, agent_names, desired_paths, sol_obstacles)
-            success = explanations_multi.is_mapf_solution_valid(new_problem, new_solution, agent_names, desired_paths)
+            if question_partial_plan:
+                success = explanations_multi.does_mapf_solution_satisfy_desired_paths(new_problem, new_solution, agent_names, desired_paths)
+            else:
+                success = explanations_multi.does_mapf_solution_satisfy_desired_paths_with_other_agents_fixed(new_problem, raw_solution, new_solution, agent_names, desired_paths)
             if success:
                 good_solution_obstacles.append(sol_obstacles)
                 good_solutions.append([new_problem, new_solution])
@@ -353,12 +457,33 @@ def main_inv_mapf_fullpath(problem_fullpath, verbose=False, animate=False, find_
     else:
 
         new_obstacles = new_obstacles2
-        #success = explanations_multi.sanity_check2(raw_solution, new_solution, agent_names, desired_paths, new_obstacles)
-        success = explanations_multi.is_mapf_solution_valid(new_problem, new_solution, agent_names, desired_paths)
+        if question_partial_plan:
+            success = explanations_multi.does_mapf_solution_satisfy_desired_paths(new_problem, new_solution, agent_names, desired_paths)
+        else:
+            success = explanations_multi.does_mapf_solution_satisfy_desired_paths_with_other_agents_fixed(new_problem, raw_solution, new_solution, agent_names, desired_paths)
         if not success:
             print('Oops, solution does not pass sanity check')
             return False, []
         if animate:
+            print('Showing original plan on original map')
+            explanations_multi.generate_animation(raw_problem, raw_problem, raw_solution)
+
+            #print('Showing original plan on new map')
+            #explanations_multi.generate_animation(raw_problem, new_problem, raw_solution)
+
+            print('Showing desired plan on original map')
+            desired_mapf_solution = copy.deepcopy(raw_solution)
+            for i in range(len(desired_paths)):
+                agent = agent_names[i]
+                desired_mapf_solution['schedule'][agent] = []
+                for t, pos in enumerate(desired_paths[i]):
+                    desired_mapf_solution['schedule'][agent].append( {'x':pos[0], 'y':pos[1], 't':t} )
+            explanations_multi.generate_animation(raw_problem, raw_problem, desired_mapf_solution)
+
+            print('Showing desired plan on new map')
+            explanations_multi.generate_animation(raw_problem, new_problem, desired_mapf_solution)
+
+            print('Showing new solution on new map')
             explanations_multi.generate_animation(raw_problem, new_problem, new_solution)
             # debug animation
             #desired_solution = copy.deepcopy(raw_solution)
@@ -368,6 +493,26 @@ def main_inv_mapf_fullpath(problem_fullpath, verbose=False, animate=False, find_
             #    for t, pos in enumerate(desired_paths[i]):
             #        desired_solution['schedule'][agent].append( {'x':pos[0], 'y':pos[1], 't':t} )
             #explanations_multi.generate_animation(raw_problem, new_problem, desired_solution)
+
+        if SAVE_FIGURES:
+            print('Showing original plan on original map')
+            explanations_multi.generate_animation(raw_problem, raw_problem, raw_solution, still=True, save=os.path.splitext(global_problem_fullpath)[0]+'oldmap-oldplan')
+
+            print('Showing desired plan on original map')
+            desired_mapf_solution = copy.deepcopy(raw_solution)
+            for i in range(len(desired_paths)):
+                agent = agent_names[i]
+                desired_mapf_solution['schedule'][agent] = []
+                for t, pos in enumerate(desired_paths[i]):
+                    desired_mapf_solution['schedule'][agent].append( {'x':pos[0], 'y':pos[1], 't':t} )
+            explanations_multi.generate_animation(raw_problem, raw_problem, desired_mapf_solution, still=True, save=os.path.splitext(global_problem_fullpath)[0]+'oldmap-desiredplan', show_waypoints=True)
+
+            print('Showing desired plan on new map')
+            explanations_multi.generate_animation(raw_problem, new_problem, desired_mapf_solution, still=True, save=os.path.splitext(global_problem_fullpath)[0]+'newmap-desiredplan', show_waypoints=True)
+
+            print('Showing new solution on new map')
+            explanations_multi.generate_animation(raw_problem, new_problem, new_solution, still=True, save=os.path.splitext(global_problem_fullpath)[0]+'newmap-newplan')
+
         return True, new_obstacles
 
 
@@ -377,6 +522,7 @@ if __name__ == '__main__':
     parser.add_argument("problem_file", help="input problem filepath")
     parser.add_argument("-v", "--verbose", action="store_true", help="outputs debug information")
     parser.add_argument("-a", "--animate", action="store_true", help="shows animation")
+    parser.add_argument("-q", "--question-partial-plan", action="store_true", help="solves question for partial (instead of full) plan, i.e. 'why do agents A not take paths D?' instead of 'why not full plan X?'")
     args = parser.parse_args()
     # Main SP Function
-    main_inv_mapf(args.problem_file, args.verbose, args.animate)
+    main_inv_mapf(args.problem_file, args.verbose, args.animate, args.question_partial_plan)

@@ -5,15 +5,22 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib import animation
 import argparse
+import pdb
 
 Colors = ['orange']
 
+GRAY = '#AAAAAA'
+DARK_BLUE = '#7F66B3'
+LIGHT_BLUE = '#B4A0C8'
+GREEN = '#00ff00'
 
 class Animation:
-    def __init__(self, old_map, new_map, schedule):
+    def __init__(self, old_map, new_map, schedule, still=False, show_waypoints=False):
         self.old_map = old_map
         self.schedule = schedule
         self.new_map = new_map
+        self.still = still
+        self.show_waypoints = show_waypoints
 
         aspect = new_map["map"]["dimensions"][0] / new_map["map"]["dimensions"][1]
 
@@ -26,6 +33,7 @@ class Animation:
         self.artists = []
         self.agents = dict()
         self.agent_names = dict()
+        self.agent_names2 = dict()
         # create boundary patch
         xmin = -0.5
         ymin = -0.5
@@ -79,10 +87,16 @@ class Animation:
             self.agents[name].original_face_color = Colors[i % len(Colors)]
             self.patches.append(self.agents[name])
             self.T = max(self.T, schedule["schedule"][name][-1]["t"])
+            # start text
             self.agent_names[name] = self.ax.text(d["start"][0], d["start"][1], name.replace('agent', ''))
             self.agent_names[name].set_horizontalalignment('center')
             self.agent_names[name].set_verticalalignment('center')
             self.artists.append(self.agent_names[name])
+            # goal text
+            self.agent_names2[name] = self.ax.text(d["goal"][0], d["goal"][1], name.replace('agent', ''))
+            self.agent_names2[name].set_horizontalalignment('center')
+            self.agent_names2[name].set_verticalalignment('center')
+            self.artists.append(self.agent_names2[name])
 
         # self.ax.set_axis_off()
         # self.fig.axes[0].set_visible(False)
@@ -90,11 +104,58 @@ class Animation:
 
         # self.fig.tight_layout()
 
-        self.anim = animation.FuncAnimation(self.fig, self.animate_func,
+        if not still:
+            self.anim = animation.FuncAnimation(self.fig, self.animate_func,
                                             init_func=self.init_func,
                                             frames=int(self.T + 1) * 10,
                                             interval=100,
                                             blit=True)
+        else:
+            for agent_name in self.schedule["schedule"]:
+                i = 0 #self.T
+                if agent_name in self.agent_names:
+                    agent = self.schedule["schedule"][agent_name]
+                    pos = self.getState(i, agent)
+                    p = (pos[0], pos[1])
+                    self.agents[agent_name].center = p
+                    self.agent_names[agent_name].set_position(p)
+            for patch in self.patches:
+                plt.gca().add_patch(patch)
+            for artist in self.artists:
+                plt.gca().add_artist(artist)
+            self.plot_agent_line_paths()
+
+    def plot_agent_line_paths(self):
+        for agent in self.old_map['agents']:
+            agent_name = agent['name']
+            if agent_name in self.agent_names:
+                if 'waypoints' in agent and self.show_waypoints:
+                    self.plot_desired_agent_path(agent, style='-', color=DARK_BLUE, linewidth=4, alpha=1)
+                else:
+                    self.plot_agent_path(agent_name, style='-', color=GRAY, linewidth=2, alpha=0.7)
+
+    def plot_desired_agent_path(self, agent, style, color, linewidth, alpha):
+        for t in range(len(agent['waypoints'])-1):
+            position = agent['waypoints'][t]
+            position2 = agent['waypoints'][t+1]
+            self.line_segment(position, position2, style, color, linewidth, alpha)
+
+    def plot_agent_path(self, agent_name, style, color, linewidth, alpha):
+        t = 0
+        while t < self.T:
+            agent = self.schedule["schedule"][agent_name]
+            position = self.getState(t, agent)
+            position2 = self.getState(t+1, agent)
+            self.line_segment(position, position2, style, color, linewidth, alpha)
+            t = t + 1
+
+    def line_segment(self, pos_a, pos_b, style, color, linewidth, alpha):
+        x_values = [pos_a[0], pos_b[0]]
+        y_values = [pos_a[1], pos_b[1]]
+        plt.plot(x_values, y_values, style, color=color, linewidth=linewidth, alpha=alpha)
+
+    def savefig(self, file_name):
+      plt.savefig(file_name+".png")
 
     def save(self, file_name, speed):
         self.anim.save(
