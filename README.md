@@ -14,7 +14,7 @@ If you use this in your research, please cite:
 
 ## Example
 
-* Download [kurf-2021/multi-agent/inv-shortest-path] folder.
+* Go to multi-agent/inv-shortest-path
 * Run the following code:
 ```
 python explanations_multi.py 8x8_a5_ex0.yaml -v -a
