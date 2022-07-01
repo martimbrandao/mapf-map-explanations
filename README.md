@@ -10,7 +10,7 @@ To explain why the MAPF plan obtained by CBS was equal to X, not Y (where Y is a
 
 If you use this in your research, please cite:
 
-> Martim Brandao, Yonathan Setiawan, "**'Why Not This MAPF Plan Instead?' Contrastive Map-based Explanations for Optimal MAPF**", *XAIP 2022*.
+> Martim Brandao, Yonathan Setiawan, "**'Why Not This MAPF Plan Instead?' Contrastive Map-based Explanations for Optimal MAPF**", *ICAPS 2022 Workshop on Explainable AI Planning (XAIP)*, 2022.
 
 ## Example
 
